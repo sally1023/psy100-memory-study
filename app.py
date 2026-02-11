@@ -3,10 +3,14 @@ import sqlite3
 from datetime import datetime
 import json
 import random
+import os
 
 app = Flask(__name__)
 
 DB_PATH = "consent_records.sqlite3"
+
+# 后台口令（Render 里设置环境变量 ADMIN_TOKEN）
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
 # ============ 160个不重复单词（4部分×40） ============
 WORD_BANK = [
@@ -34,30 +38,10 @@ WORD_BANK = [
 
 # ============ 4部分配置 ============
 PARTS = [
-    {
-        "part": 1,
-        "minutes": 4,
-        "instruction": "say out the words you see.",
-        "interval_sec": 6
-    },
-    {
-        "part": 2,
-        "minutes": 2,
-        "instruction": "say out the words you see.",
-        "interval_sec": 3
-    },
-    {
-        "part": 3,
-        "minutes": 4,
-        "instruction": "remember the words you see without say.",
-        "interval_sec": 6
-    },
-    {
-        "part": 4,
-        "minutes": 2,
-        "instruction": "remember the words you see without say.",
-        "interval_sec": 3
-    }
+    {"part": 1, "minutes": 4, "instruction": "say out the words you see.", "interval_sec": 6},
+    {"part": 2, "minutes": 2, "instruction": "say out the words you see.", "interval_sec": 3},
+    {"part": 3, "minutes": 4, "instruction": "remember the words you see without say.", "interval_sec": 6},
+    {"part": 4, "minutes": 2, "instruction": "remember the words you see without say.", "interval_sec": 3},
 ]
 
 def init_db():
@@ -88,10 +72,9 @@ def init_db():
 init_db()
 
 def get_words_for_part(part_num: int):
-    # 每个part取自己那一段40词，再随机
     start = (part_num - 1) * 40
     chunk = WORD_BANK[start:start+40]
-    chunk = chunk[:]  # copy
+    chunk = chunk[:]
     random.shuffle(chunk)
     return chunk
 
@@ -119,7 +102,6 @@ def consent():
     if request.method == "POST":
         participant_code = request.form.get("participant_code", "").strip()
         consent_value = request.form.get("consent")
-
         consent_int = 1 if consent_value == "yes" else 0
 
         conn = sqlite3.connect(DB_PATH)
@@ -130,7 +112,6 @@ def consent():
         conn.commit()
         conn.close()
 
-        # 进入实验总说明页
         return redirect(f"/start?code={participant_code}")
 
     return """
@@ -186,7 +167,6 @@ def consent():
 @app.route("/start")
 def start():
     code = request.args.get("code", "").strip()
-    total_minutes = sum(p["minutes"] for p in PARTS) + (20+30+20+30+20+30+20)/60  # 粗略写给被试看
     return f"""
     <!doctype html>
     <html>
@@ -284,7 +264,6 @@ def run_part(part_num):
         function nextWord() {{
           i++;
           if (i >= words.length) {{
-            // 去20秒休息
             window.location.href = `/rest20/{part_num}?code=${{encodeURIComponent(payload.code)}}&w=${{encodeURIComponent(JSON.stringify(words))}}`;
             return;
           }}
@@ -335,7 +314,6 @@ def rest20(part_num):
 @app.route("/recall/<int:part_num>", methods=["GET", "POST"])
 def recall(part_num):
     code = request.args.get("code", "").strip()
-
     cfg = next((p for p in PARTS if p["part"] == part_num), None)
     if not cfg:
         return "Invalid part", 400
@@ -353,12 +331,10 @@ def recall(part_num):
             recalled_text=recalled_text
         )
 
-        # 休息30秒后进入下一部分或结束
         next_part = part_num + 1
         if next_part <= 4:
             return redirect(f"/rest30/{part_num}?code={code}&next={next_part}")
-        else:
-            return redirect(f"/done?code={code}")
+        return redirect(f"/done?code={code}")
 
     words_json = request.args.get("w", "[]")
     return f"""
@@ -427,14 +403,17 @@ def done():
     <h2>Experiment completed</h2>
     <p>Thank you for participating.</p>
     <p>Participant Code: <strong>{code}</strong></p>
-    <p>(Researcher) View records: <a href="/admin">/admin</a></p>
     """
 
 @app.route("/admin")
 def admin():
+    # 访问方式：/admin?t=你的ADMIN_TOKEN
+    t = request.args.get("t", "")
+    if not ADMIN_TOKEN or t != ADMIN_TOKEN:
+        return "Forbidden", 403
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-
     consent_rows = conn.execute("SELECT * FROM consent ORDER BY id DESC").fetchall()
     recall_rows = conn.execute("SELECT * FROM recall ORDER BY id DESC").fetchall()
     conn.close()
@@ -455,6 +434,7 @@ def admin():
     html += "<tr><th>ID</th><th>Participant</th><th>Part</th><th>Interval</th><th>Instruction</th><th>Words Shown</th><th>Typed Recall</th><th>Time</th></tr>"
     for r in recall_rows:
         words = json.loads(r["words_json"]) if r["words_json"] else []
+        safe = (r["recalled_text"] or "").replace("<","&lt;").replace(">","&gt;")
         html += "<tr>"
         html += f"<td>{r['id']}</td>"
         html += f"<td>{r['participant_code']}</td>"
@@ -462,7 +442,7 @@ def admin():
         html += f"<td>{r['interval_sec']}s</td>"
         html += f"<td>{r['instruction']}</td>"
         html += f"<td>{', '.join(words)}</td>"
-        html += f"<td>{(r['recalled_text'] or '').replace('<','&lt;').replace('>','&gt;')}</td>"
+        html += f"<td>{safe}</td>"
         html += f"<td>{r['created_at']}</td>"
         html += "</tr>"
     html += "</table>"
@@ -470,5 +450,7 @@ def admin():
     return html
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Render 要用 PORT 环境变量
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
 
