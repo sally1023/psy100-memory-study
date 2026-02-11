@@ -405,6 +405,10 @@ def done():
     <p>Participant Code: <strong>{code}</strong></p>
     """
 
+@app.route("/debug_token_len")
+def debug_token_len():
+    return str(len(ADMIN_TOKEN))
+
 @app.route("/admin")
 def admin():
     # 访问方式：/admin?t=你的ADMIN_TOKEN
