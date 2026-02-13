@@ -73,8 +73,8 @@ init_db()
 
 def get_words_for_part(part_num: int):
     start = (part_num - 1) * 40
-    chunk = WORD_BANK[start:start+40]
-    chunk = chunk[:]
+    chunk = WORD_BANK[start:start + 40]
+    chunk = chunk[:]  # copy
     random.shuffle(chunk)
     return chunk
 
@@ -90,12 +90,39 @@ def save_recall(participant_code, part, instruction, interval_sec, words_list, r
             instruction,
             int(interval_sec),
             json.dumps(words_list),
-            recalled_text.strip(),
+            (recalled_text or "").strip(),
             datetime.now().isoformat(timespec="seconds")
         )
     )
     conn.commit()
     conn.close()
+
+# ============ Scoring (admin 和 done 共用，保证一致) ============
+def normalize_tokens(text: str):
+    if not text:
+        return []
+    t = text.lower()
+    for ch in [",", ".", ";", ":", "/", "\\", "|", "\t", "\r", "\n"]:
+        t = t.replace(ch, " ")
+    parts = [p.strip() for p in t.split(" ") if p.strip()]
+    return parts
+
+def score_recall(words_shown, recalled_text):
+    shown_set = set([w.lower() for w in (words_shown or [])])
+    recalled_tokens = normalize_tokens(recalled_text)
+
+    correct = []
+    seen = set()
+    for tok in recalled_tokens:
+        if tok in shown_set and tok not in seen:
+            correct.append(tok)
+            seen.add(tok)
+
+    return {
+        "correct_count": len(correct),
+        "correct_words": correct,
+        "typed_tokens": recalled_tokens
+    }
 
 @app.route("/", methods=["GET", "POST"])
 def consent():
@@ -396,13 +423,59 @@ def rest30(just_finished_part):
     </html>
     """
 
+# ✅ done：显示与 admin 完全一致的计分结果
 @app.route("/done")
 def done():
     code = request.args.get("code", "").strip()
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM recall WHERE participant_code = ? ORDER BY part ASC",
+        (code,)
+    ).fetchall()
+    conn.close()
+
+    total = 0
+    parts_html = ""
+
+    for r in rows:
+        part = int(r["part"])
+        words = json.loads(r["words_json"]) if r["words_json"] else []
+        recalled = r["recalled_text"] or ""
+        s = score_recall(words, recalled)
+
+        total += s["correct_count"]
+
+        parts_html += f"""
+        <div class="card">
+          <h3>Part {part}</h3>
+          <p><strong>Correct (DV):</strong> {s["correct_count"]} / {len(words)}</p>
+          <p><strong>Correct words:</strong> {", ".join(s["correct_words"])}</p>
+        </div>
+        """
+
     return f"""
-    <h2>Experiment completed</h2>
-    <p>Thank you for participating.</p>
-    <p>Participant Code: <strong>{code}</strong></p>
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Results</title>
+      <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; max-width: 900px; }}
+        .card {{ border: 1px solid #ccc; padding: 16px; margin: 12px 0; }}
+      </style>
+    </head>
+    <body>
+      <h2>Experiment completed</h2>
+      <p>Thank you for participating.</p>
+      <p>Participant Code: <strong>{code}</strong></p>
+      <hr>
+      {parts_html}
+      <hr>
+      <h3>Total Correct: {total}</h3>
+    </body>
+    </html>
     """
 
 @app.route("/debug_token_len")
@@ -421,8 +494,7 @@ def admin():
     recall_rows = conn.execute("SELECT * FROM recall ORDER BY id DESC").fetchall()
     conn.close()
 
-    # ====== 参与者汇总（按 participant_code 汇总每个 part 分数）======
-    summary = {}  # code -> {part->score}
+    summary = {}
     for r in recall_rows:
         code = r["participant_code"] or ""
         part = int(r["part"])
@@ -434,7 +506,6 @@ def admin():
             summary[code] = {}
         summary[code][part] = s["correct_count"]
 
-    # ====== HTML ======
     html = "<h2>Admin</h2>"
 
     html += "<h3>Participant Summary (DV = correct words)</h3>"
@@ -470,7 +541,6 @@ def admin():
         recalled = r["recalled_text"] or ""
         s = score_recall(words, recalled)
 
-        # 你的 2x2 IV 映射：part1/2=aloud; part3/4=quiet; 6s=slow; 3s=quick
         mode = "aloud" if int(r["part"]) in (1, 2) else "quiet"
         speed = "slow(6s)" if int(r["interval_sec"]) == 6 else "quick(3s)"
         ivs = f"{mode}, {speed}"
@@ -491,8 +561,6 @@ def admin():
     return html
 
 if __name__ == "__main__":
-    # Render 要用 PORT 环境变量
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=False)
 
-# DEBUG: token check
