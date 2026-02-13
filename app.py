@@ -436,24 +436,57 @@ def done():
     ).fetchall()
     conn.close()
 
-    total = 0
-    parts_html = ""
+    html_parts = ""
+    total_correct = 0
 
     for r in rows:
         part = int(r["part"])
-        words = json.loads(r["words_json"]) if r["words_json"] else []
-        recalled = r["recalled_text"] or ""
-        s = score_recall(words, recalled)
+        shown_words = json.loads(r["words_json"]) if r["words_json"] else []
+        recalled_text = r["recalled_text"] or ""
 
-        total += s["correct_count"]
+        # === 评分（和admin一致）===
+        recalled_tokens = recalled_text.lower().replace("\n"," ").split()
+        correct_words = sorted(list(set(recalled_tokens) & set(shown_words)))
+        correct_count = len(correct_words)
+        total_correct += correct_count
 
-        parts_html += f"""
-        <div class="card">
-          <h3>Part {part}</h3>
-          <p><strong>Correct (DV):</strong> {s["correct_count"]} / {len(words)}</p>
-          <p><strong>Correct words:</strong> {", ".join(s["correct_words"])}</p>
+        html_parts += f"""
+        <div style="border:1px solid #ccc; padding:15px; margin:20px 0;">
+            <h3>Part {part}</h3>
+
+            <p><strong>Words Presented (in order):</strong></p>
+            <p>{" , ".join(shown_words)}</p>
+
+            <p><strong>Your Typed Response:</strong></p>
+            <p>{recalled_text.replace("<","&lt;").replace(">","&gt;")}</p>
+
+            <p><strong>Correct Words:</strong></p>
+            <p>{" , ".join(correct_words)}</p>
+
+            <p><strong>Score:</strong> {correct_count} / 40</p>
         </div>
         """
+
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Experiment Results</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 40px; max-width: 900px; }}
+        </style>
+    </head>
+    <body>
+        <h2>Experiment Completed</h2>
+        <p>Participant Code: <strong>{code}</strong></p>
+        <hr>
+        {html_parts}
+        <hr>
+        <h2>Total Correct: {total_correct}</h2>
+    </body>
+    </html>
+    """
 
     return f"""
     <!doctype html>
