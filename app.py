@@ -411,7 +411,6 @@ def debug_token_len():
 
 @app.route("/admin")
 def admin():
-    # 访问方式：/admin?t=你的ADMIN_TOKEN
     t = request.args.get("t", "")
     if not ADMIN_TOKEN or t != ADMIN_TOKEN:
         return "Forbidden", 403
@@ -422,7 +421,36 @@ def admin():
     recall_rows = conn.execute("SELECT * FROM recall ORDER BY id DESC").fetchall()
     conn.close()
 
+    # ====== 参与者汇总（按 participant_code 汇总每个 part 分数）======
+    summary = {}  # code -> {part->score}
+    for r in recall_rows:
+        code = r["participant_code"] or ""
+        part = int(r["part"])
+        words = json.loads(r["words_json"]) if r["words_json"] else []
+        recalled = r["recalled_text"] or ""
+        s = score_recall(words, recalled)
+
+        if code not in summary:
+            summary[code] = {}
+        summary[code][part] = s["correct_count"]
+
+    # ====== HTML ======
     html = "<h2>Admin</h2>"
+
+    html += "<h3>Participant Summary (DV = correct words)</h3>"
+    html += "<table border='1' cellpadding='6'>"
+    html += "<tr><th>Participant</th><th>Part1</th><th>Part2</th><th>Part3</th><th>Part4</th><th>Total</th></tr>"
+    for code in sorted(summary.keys()):
+        p1 = summary[code].get(1, "")
+        p2 = summary[code].get(2, "")
+        p3 = summary[code].get(3, "")
+        p4 = summary[code].get(4, "")
+        total = 0
+        for v in [p1, p2, p3, p4]:
+            if isinstance(v, int):
+                total += v
+        html += f"<tr><td>{code}</td><td>{p1}</td><td>{p2}</td><td>{p3}</td><td>{p4}</td><td>{total}</td></tr>"
+    html += "</table>"
 
     html += "<h3>Consent Records</h3>"
     html += "<table border='1' cellpadding='6'>"
@@ -433,24 +461,33 @@ def admin():
         html += f"<td>{r['created_at']}</td></tr>"
     html += "</table>"
 
-    html += "<h3>Recall Records</h3>"
+    html += "<h3>Recall Records (Scored)</h3>"
     html += "<table border='1' cellpadding='6'>"
-    html += "<tr><th>ID</th><th>Participant</th><th>Part</th><th>Interval</th><th>Instruction</th><th>Words Shown</th><th>Typed Recall</th><th>Time</th></tr>"
+    html += "<tr><th>ID</th><th>Participant</th><th>Part</th><th>IVs</th><th>Correct (DV)</th><th>Correct Words</th><th>Typed</th><th>Time</th></tr>"
+
     for r in recall_rows:
         words = json.loads(r["words_json"]) if r["words_json"] else []
-        safe = (r["recalled_text"] or "").replace("<","&lt;").replace(">","&gt;")
+        recalled = r["recalled_text"] or ""
+        s = score_recall(words, recalled)
+
+        # 你的 2x2 IV 映射：part1/2=aloud; part3/4=quiet; 6s=slow; 3s=quick
+        mode = "aloud" if int(r["part"]) in (1, 2) else "quiet"
+        speed = "slow(6s)" if int(r["interval_sec"]) == 6 else "quick(3s)"
+        ivs = f"{mode}, {speed}"
+
+        safe_typed = recalled.replace("<","&lt;").replace(">","&gt;")
         html += "<tr>"
         html += f"<td>{r['id']}</td>"
         html += f"<td>{r['participant_code']}</td>"
         html += f"<td>{r['part']}</td>"
-        html += f"<td>{r['interval_sec']}s</td>"
-        html += f"<td>{r['instruction']}</td>"
-        html += f"<td>{', '.join(words)}</td>"
-        html += f"<td>{safe}</td>"
+        html += f"<td>{ivs}</td>"
+        html += f"<td><strong>{s['correct_count']}</strong>/40</td>"
+        html += f"<td>{', '.join(s['correct_words'])}</td>"
+        html += f"<td>{safe_typed}</td>"
         html += f"<td>{r['created_at']}</td>"
         html += "</tr>"
-    html += "</table>"
 
+    html += "</table>"
     return html
 
 if __name__ == "__main__":
